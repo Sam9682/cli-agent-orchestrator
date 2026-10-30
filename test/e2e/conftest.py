@@ -211,6 +211,13 @@ def require_opencode():
 
 
 @pytest.fixture()
+def require_shai_cli():
+    """Skip test if shai binary is not available."""
+    if not _cli_available("shai"):
+        pytest.skip("shai CLI not installed")
+
+
+@pytest.fixture()
 def require_omp():
     """Skip test if OMP CLI is not available."""
     if not _cli_available("omp"):

@@ -20,6 +20,7 @@ DISPLAY_TO_PROVIDER = {
     "Kiro CLI": "kiro_cli",
     "Copilot CLI": "copilot_cli",
     "OpenCode CLI": "opencode_cli",
+    "SHAI CLI": "shai_cli",
     "Grok Build CLI": "grok_cli",
     "Kimi CLI": "kimi_cli",
     "Codex": "codex",
@@ -81,6 +82,6 @@ def test_no_enforcement_providers_are_the_documented_ones():
 def test_install_time_providers_are_native():
     from cli_agent_orchestrator.utils.enforcement import INSTALL_TIME_PROVIDERS
 
-    assert INSTALL_TIME_PROVIDERS == {"opencode_cli", "kiro_cli"}
+    assert INSTALL_TIME_PROVIDERS == {"opencode_cli", "kiro_cli", "shai_cli"}
     for provider in INSTALL_TIME_PROVIDERS:
         assert PROVIDER_ENFORCEMENT[provider] == NATIVE, provider

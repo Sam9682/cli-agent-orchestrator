@@ -320,6 +320,7 @@ As described in [How Tool Restrictions Are Enforced](#how-tool-restrictions-are-
 | **Kiro CLI** | Hard (install time) | `tools` in the agent JSON is written from the resolved `allowedTools` by `cao install`; `--trust-all-tools` only suppresses prompts for the tools that remain; launch-time `--allowed-tools` and role overrides select the installed agent and do not change its `tools`. Profiles installed before this change still carry `tools: ["*"]` until reinstalled |
 | **Copilot CLI** | Hard | `--deny-tool` flags override `--allow-all` |
 | **OpenCode CLI** | Hard | `permission:` YAML frontmatter enforced natively at install time; launch-time `--allowed-tools` and role overrides select the installed agent and do not change its permissions |
+| **SHAI CLI** | Hard (install time) | `tools.builtin` / `tools.builtin_excluded` in the agent JSON written at install time from the resolved `allowedTools`; SHAI removes an excluded built-in from the agent's toolset at runtime (probe-confirmed); launch-time `--allowed-tools` and role overrides select the installed agent and do not change it |
 | **Grok Build CLI** | Native (mapped families) | Restricted profiles use deny-by-default `--permission-mode dontAsk` with explicit native/MCP allows and defense-in-depth denies; native subagents are disabled |
 | **Kimi CLI** | Soft | Security system prompt only |
 | **MiniMax Code** | Soft | Security bootstrap prompt only |

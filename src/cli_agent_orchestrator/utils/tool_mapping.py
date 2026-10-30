@@ -111,6 +111,43 @@ TOOL_MAPPING: Dict[str, Dict[str, List[str]]] = {
         ],
         "web_fetch": ["web_fetch", "google_web_search"],
     },
+    # SHAI CLI (ovh/shai). Tool policy is NATIVE and install-time: the agent
+    # JSON's ``tools.builtin`` is the enable list and ``tools.builtin_excluded``
+    # the exclude list, both baked into
+    # ``SHAI_AGENTS_DIR/<profile>.config.json`` at ``cao install`` and read when
+    # the agent loads at launch. A live probe (SHAI 0.2.2, see
+    # ``test/providers/fixtures/shai_cli_PROBE_NOTES.md`` item 7) confirmed an
+    # excluded builtin is genuinely REFUSED at runtime — an agent with
+    # ``builtin_excluded: ["bash"]`` had no shell tool in the set presented to
+    # the model and raised no approval dialog — not merely hidden. There is no
+    # per-launch tool-restriction flag, so like opencode/kiro the policy is the
+    # installed agent's (see ``INSTALL_TIME_PROVIDERS`` in ``utils/enforcement``).
+    #
+    # Built-in names are the canonical lowercase SHAI registry enumerated in the
+    # probe (``*ToolParams`` structs + runtime string table + agent-config doc):
+    # read, write, edit, bash, ls, find, fetch, skills, todo_read, todo_write,
+    # memory_write, memory_remove. The SEARCH tool is ``find`` (NOT grep/glob —
+    # those appear only as tree-sitter query strings in the binary); MCP tools
+    # live under ``tools.mcp``, separate from ``builtin``.
+    #
+    # Only the capability tools (execution / read / write / list+search /
+    # network) are mapped. The non-gated chrome builtins — skills, todo_read,
+    # todo_write, memory_write, memory_remove — are deliberately left OUT of the
+    # mapping (and therefore out of ``ALL_NATIVE_TOOLS["shai_cli"]``) so they are
+    # never written to ``builtin_excluded``: Property 8 blocks exactly the
+    # COMPLEMENT of the allowlist over the MAPPED tools, so an unmapped builtin
+    # is neither granted nor force-blocked. This matches how ``kiro_cli`` keeps
+    # its chrome (``KIRO_BUILTIN_CHROME``) out of the capability mapping.
+    "shai_cli": {
+        "execute_bash": ["bash"],
+        "fs_read": ["read"],
+        # ``edit`` is in-place file modification, the same privilege as ``write``.
+        "fs_write": ["write", "edit"],
+        # ``ls`` lists a directory; ``find`` is SHAI's file/content search tool.
+        "fs_list": ["ls", "find"],
+        "fs_*": ["read", "write", "edit", "ls", "find"],
+        "web_fetch": ["fetch"],
+    },
 }
 
 # Complete set of all native tools per provider (used to compute disallowed set).

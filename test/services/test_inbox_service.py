@@ -1988,6 +1988,7 @@ class TestInboxRecoveryCoverageByProvider:
         # but nothing can be re-sent safely (P2-3), so a swallowed Enter is only
         # logged.
         "opencode_cli",
+        "shai_cli",
         "mcode",
     }
 

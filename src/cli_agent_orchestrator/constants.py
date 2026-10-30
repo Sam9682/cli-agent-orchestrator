@@ -465,6 +465,13 @@ OPENCODE_CONFIG_DIR = Path.home() / ".aws" / "opencode"  # OpenCode CAO-managed 
 OPENCODE_AGENTS_DIR = OPENCODE_CONFIG_DIR / "agents"  # OpenCode agent .md files
 OPENCODE_CONFIG_FILE = OPENCODE_CONFIG_DIR / "opencode.json"  # OpenCode MCP + tool gating config
 
+# SHAI (ovh/shai) — native user dirs (read-only discovery) vs CAO-managed (read-write)
+SHAI_USER_CONFIG_DIR = Path.home() / ".config" / "shai"  # native config/auth
+SHAI_USER_AGENTS_DIR = SHAI_USER_CONFIG_DIR / "agents"  # native agents
+SHAI_XDG_HOME = Path.home() / ".aws" / "shai_xdg"  # XDG_CONFIG_HOME at launch
+SHAI_CONFIG_DIR = SHAI_XDG_HOME / "shai"  # CAO-managed root
+SHAI_AGENTS_DIR = SHAI_CONFIG_DIR / "agents"  # CAO-managed agents
+
 # =============================================================================
 # Database Configuration
 # =============================================================================

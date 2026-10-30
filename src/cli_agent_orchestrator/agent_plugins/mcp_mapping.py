@@ -124,6 +124,12 @@ PROVIDER_TRANSPORTS: Dict[str, frozenset] = {
     # the honest answer and "stdio is deliverable" would be a false claim. The
     # delivery-matrix test derives its expectations from this table, so the two
     # cannot drift.
+    #
+    # ``shai_cli`` builds no plugin MCP configuration: its managed agent JSON
+    # always writes ``tools.mcp = {}`` (utils/shai_config.py) and the provider has
+    # no ``with_plugin_mcp`` wiring, so — like hermes/mock_cli — it has no MCP
+    # delivery path and reports an empty set rather than the stdio-only default.
+    "shai_cli": frozenset(),
     "hermes": frozenset(),
     "mock_cli": frozenset(),
 }
@@ -178,6 +184,9 @@ PROVIDER_CWD_DELIVERY: Dict[str, str] = {
     "cursor_cli": "shim",
     "copilot_cli": "shim",
     "omp": "shim",
+    # ``shai_cli`` builds no MCP configuration at all (see PROVIDER_TRANSPORTS),
+    # so there is nothing to carry a working directory for.
+    "shai_cli": "none",
     "hermes": "none",
     "mock_cli": "none",
 }

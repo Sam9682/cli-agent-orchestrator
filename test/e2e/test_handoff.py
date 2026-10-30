@@ -482,3 +482,29 @@ class TestMiniMaxCodeHandoff:
 
     def test_handoff_second_task(self, require_minimax_code):
         _run_second_task_same_terminal_test(provider="mcode", agent_profile="developer")
+
+
+# ---------------------------------------------------------------------------
+# SHAI CLI provider tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+class TestSHAICliHandoff:
+    """E2E lifecycle tests for the SHAI (ovh/shai) CLI provider."""
+
+    def test_handoff_simple_function(self, require_shai_cli):
+        """SHAI CLI developer creates a simple Python function and returns output."""
+        _run_handoff_test(
+            provider="shai_cli",
+            agent_profile="developer",
+            task_message=(
+                "Create a Python function called 'greet' that takes a name parameter "
+                "and returns 'Hello, {name}!'. Output only the function code."
+            ),
+            content_keywords=["greet", "hello", "def"],
+        )
+
+    def test_handoff_second_task(self, require_shai_cli):
+        """SHAI returns the second independent response from the same TUI session."""
+        _run_second_task_same_terminal_test(provider="shai_cli", agent_profile="developer")

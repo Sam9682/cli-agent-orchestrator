@@ -5,12 +5,17 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from cli_agent_orchestrator.models.agent_profile import AgentProfile
 from cli_agent_orchestrator.utils.agent_profiles import (
     load_agent_profile,
     parse_agent_profile_text,
     resolve_provider,
+)
+from cli_agent_orchestrator.utils.ephemeral_names import (
+    routes_to_ephemeral_store as routes_to_ephemeral,
 )
 
 
@@ -303,6 +308,10 @@ class TestListAgentProfiles:
         # built-in is scanned last, so it lands in duplicated_in — not as the winner.
         assert developer_profiles[0]["duplicated_in"] == ["built-in"]
 
+    @patch(
+        "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR",
+        Path("/nonexistent/shai/agents"),
+    )
     @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
     @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
     @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")
@@ -425,6 +434,10 @@ class TestListAgentProfiles:
         assert "custom-agent1" in names
         assert "custom-agent2" in names
 
+    @patch(
+        "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR",
+        Path("/nonexistent/shai/agents"),
+    )
     @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
     @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
     @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")
@@ -457,6 +470,499 @@ class TestListAgentProfiles:
         names = [p["name"] for p in result]
         assert names == sorted(names)
         assert names == ["alpha", "middle", "zebra"]
+
+    # ── SHAI discovery-fix: Property 1 (Bug Condition) — agent surface ────
+    #
+    # Bug condition per design: isBugCondition(AGENT_LISTING) holds when a valid
+    # native SHAI agent exists under SHAI_USER_AGENTS_DIR but its discovered
+    # name is absent from the agent listing. The seam is the native dir itself:
+    # these tests populate a fake SHAI_USER_AGENTS_DIR (the default arg of
+    # discover_user_agents) with real *.config.json / legacy *.config files and
+    # assert the agent is surfaced.
+    #
+    # On UNFIXED code discover_user_agents() has no caller and
+    # SHAI_USER_AGENTS_DIR is never scanned, so the agent is absent — these
+    # assertions FAIL, and that failure is the counterexample that proves the
+    # bug. After Change 2 folds discover_user_agents() into
+    # _list_installed_profiles(), the same assertions pass with source == "shai"
+    # and loadable is False.
+
+    @staticmethod
+    def _write_native_shai_agent(agents_dir: Path, name: str, *, legacy: bool = False) -> Path:
+        """Write a valid native SHAI agent config into `agents_dir`.
+
+        Modern shape: `<name>.config.json`; legacy fallback: `<name>.config`.
+        Both carry SHAI's documented schema (name/description/system_prompt/
+        llm_provider/tools) so discover_user_agents() reads real metadata.
+        """
+        import json
+
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        suffix = ".config" if legacy else ".config.json"
+        path = agents_dir / f"{name}{suffix}"
+        path.write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "description": f"Native SHAI agent {name}",
+                    "system_prompt": "You are a SHAI agent.",
+                    "llm_provider": {"type": "openai"},
+                    "tools": {"builtin": [], "builtin_excluded": [], "mcp": {}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
+    @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
+    @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")
+    @patch("cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR")
+    @patch("cli_agent_orchestrator.utils.agent_profiles.resources")
+    def test_list_agent_profiles_surfaces_native_shai_agent_modern_shape(
+        self,
+        mock_resources,
+        mock_local_dir,
+        mock_scan,
+        mock_get_agent_dirs,
+        mock_get_extra_dirs,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A native `AGENTS_CONTROL_AGENT.config.json` under SHAI_USER_AGENTS_DIR
+        is surfaced by list_agent_profiles() with source 'shai', loadable False.
+
+        FAILS on unfixed code: SHAI_USER_AGENTS_DIR is never scanned and
+        discover_user_agents() is never called, so AGENTS_CONTROL_AGENT is
+        absent. Counterexample: native file exists, agent not listed.
+        """
+        from cli_agent_orchestrator.utils.agent_profiles import list_agent_profiles
+
+        # Silence the non-SHAI sources so the listing reflects only SHAI here.
+        mock_agent_store = MagicMock()
+        mock_agent_store.iterdir.return_value = []
+        mock_resources.files.return_value = mock_agent_store
+        mock_local_dir.exists.return_value = False
+
+        # Fake native SHAI dir — the default arg of discover_user_agents().
+        shai_dir = tmp_path / "shai-agents"
+        self._write_native_shai_agent(shai_dir, "AGENTS_CONTROL_AGENT")
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR", shai_dir
+        )
+
+        result = list_agent_profiles()
+
+        by_name = {p["name"]: p for p in result}
+        assert "AGENTS_CONTROL_AGENT" in by_name, (
+            "BUG (expected on unfixed code): a valid native SHAI agent exists at "
+            f"{shai_dir}/AGENTS_CONTROL_AGENT.config.json but is absent from the "
+            f"agent listing. Returned names: {sorted(by_name)}"
+        )
+        entry = by_name["AGENTS_CONTROL_AGENT"]
+        assert entry["source"] == "shai"
+        assert entry["loadable"] is False
+
+    @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
+    @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
+    @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")
+    @patch("cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR")
+    @patch("cli_agent_orchestrator.utils.agent_profiles.resources")
+    def test_list_agent_profiles_surfaces_native_shai_agent_legacy_shape(
+        self,
+        mock_resources,
+        mock_local_dir,
+        mock_scan,
+        mock_get_agent_dirs,
+        mock_get_extra_dirs,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A legacy-shape native `foo.config` under SHAI_USER_AGENTS_DIR is
+        surfaced by list_agent_profiles() with source 'shai', loadable False.
+
+        FAILS on unfixed code: the native dir is never scanned, so `foo` is
+        absent. Counterexample: legacy native file exists, agent not listed.
+        """
+        from cli_agent_orchestrator.utils.agent_profiles import list_agent_profiles
+
+        mock_agent_store = MagicMock()
+        mock_agent_store.iterdir.return_value = []
+        mock_resources.files.return_value = mock_agent_store
+        mock_local_dir.exists.return_value = False
+
+        shai_dir = tmp_path / "shai-agents"
+        self._write_native_shai_agent(shai_dir, "foo", legacy=True)
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR", shai_dir
+        )
+
+        result = list_agent_profiles()
+
+        by_name = {p["name"]: p for p in result}
+        assert "foo" in by_name, (
+            "BUG (expected on unfixed code): a valid legacy native SHAI agent "
+            f"exists at {shai_dir}/foo.config but is absent from the agent "
+            f"listing. Returned names: {sorted(by_name)}"
+        )
+        entry = by_name["foo"]
+        assert entry["source"] == "shai"
+        assert entry["loadable"] is False
+
+
+class TestListAgentProfilesPreservation:
+    """SHAI discovery-fix: Property 2 (Preservation) — agent surface.
+
+    Preservation per design: for any discovery query where the bug condition
+    does NOT hold, the fixed code produces the same result as the original for
+    every NON-SHAI entry — same names, same ``source``/``loadable``, same
+    dedup/precedence (first-found wins; built-in scanned last) and
+    ``duplicated_in`` conflict flagging, same alphabetical sort — and an absent,
+    empty, or unreadable ``SHAI_USER_AGENTS_DIR`` leaves the rest of the listing
+    intact without error.
+
+    Observation-first: these assertions encode the ACTUAL non-SHAI listing
+    observed on unfixed code. The invariant is expressed against the non-SHAI
+    SUBSET of the listing (entries with ``source != "shai"``), so it holds both
+    now — where SHAI contributes nothing, so the subset equals the full listing
+    — and after the fix, where SHAI only ever ADDS ``source == "shai"`` entries
+    and must never mutate or drop a non-SHAI one.
+
+    Seams follow the existing suite: ``_scan_directory`` is patched to inject a
+    generated set of non-SHAI profiles (with controllable source labels and
+    name collisions), the built-in store is faked via ``resources.files``, and
+    the SHAI side is driven by a real fake ``SHAI_USER_AGENTS_DIR`` (the default
+    arg of ``discover_user_agents()``).
+    """
+
+    # Deterministic, legal profile-name alphabet (no "/", "\\", or ".." — see
+    # _validate_agent_name) so generated SHAI files are real, loadable configs.
+    _NAME = st.text(
+        alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
+        min_size=1,
+        max_size=12,
+    ).filter(lambda s: ".." not in s and not routes_to_ephemeral(s))
+
+    @staticmethod
+    def _non_shai_subset(result):
+        """The listing's non-SHAI entries, keyed by name (the preserved set)."""
+        return {p["name"]: p for p in result if p.get("source") != "shai"}
+
+    @staticmethod
+    def _wire_non_shai(
+        monkeypatch,
+        *,
+        local_names,
+        provider_names,
+        builtin_names,
+    ):
+        """Patch the non-SHAI discovery seams to a generated profile set."""
+        ap = "cli_agent_orchestrator.utils.agent_profiles"
+        ss = "cli_agent_orchestrator.services.settings_service"
+
+        monkeypatch.setattr(f"{ss}.get_extra_agent_dirs", lambda: [])
+        monkeypatch.setattr(
+            f"{ss}.get_agent_dirs",
+            lambda: ({"kiro_cli": "/fake/kiro/agents"} if provider_names else {}),
+        )
+
+        # Built-in store: real-dir-backed-ish fake so iterdir()/read_text() work.
+        builtin_items = []
+        for name in builtin_names:
+            f = MagicMock()
+            f.name = f"{name}.md"
+            f.read_text.return_value = f"---\ndescription: builtin {name}\n---\nPrompt"
+            builtin_items.append(f)
+        mock_agent_store = MagicMock()
+        mock_agent_store.iterdir.return_value = builtin_items
+        mock_resources = MagicMock()
+        mock_resources.files.return_value = mock_agent_store
+        monkeypatch.setattr(f"{ap}.resources", mock_resources)
+
+        mock_local_dir = MagicMock()
+        mock_local_dir.exists.return_value = True
+        mock_local_dir.resolve.return_value = Path("/fake/local-store")
+        monkeypatch.setattr(f"{ap}.LOCAL_AGENT_STORE_DIR", mock_local_dir)
+
+        def fake_scan(
+            directory, source_label, profiles, name_sources=None, dir_profiles_loadable=True
+        ):
+            if source_label == "local":
+                injected = local_names
+            elif source_label == "kiro":
+                injected = provider_names
+            else:
+                injected = []
+            for name in injected:
+                if name_sources is not None:
+                    name_sources.setdefault(name, []).append(source_label)
+                if name not in profiles:
+                    profiles[name] = {
+                        "name": name,
+                        "description": f"{source_label} {name}",
+                        "source": source_label,
+                        "loadable": dir_profiles_loadable,
+                    }
+
+        monkeypatch.setattr(f"{ap}._scan_directory", fake_scan)
+
+    @staticmethod
+    def _write_native_shai_agents(agents_dir: Path, names, *, legacy: bool = False):
+        """Create valid native SHAI configs for each name under ``agents_dir``."""
+        import json
+
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        suffix = ".config" if legacy else ".config.json"
+        for name in names:
+            (agents_dir / f"{name}{suffix}").write_text(
+                json.dumps(
+                    {
+                        "name": name,
+                        "description": f"Native SHAI agent {name}",
+                        "system_prompt": "You are a SHAI agent.",
+                        "llm_provider": {"type": "openai"},
+                        "tools": {"builtin": [], "builtin_excluded": [], "mcp": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    @settings(
+        max_examples=60,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    @given(
+        local_names=st.lists(_NAME, max_size=5, unique=True),
+        provider_names=st.lists(_NAME, max_size=5, unique=True),
+        builtin_names=st.lists(_NAME, max_size=5, unique=True),
+        shai_names=st.lists(_NAME, max_size=5, unique=True),
+    )
+    def test_non_shai_entries_preserved_across_random_shai_names(
+        self,
+        local_names,
+        provider_names,
+        builtin_names,
+        shai_names,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Random non-SHAI profiles + random native SHAI names (incl. names that
+        collide with existing profiles): every non-SHAI entry is preserved
+        exactly, the listing stays sorted by name, and dedup/precedence +
+        duplicated_in flagging are unchanged.
+
+        Validates: Requirements 3.2
+
+        The invariant compares the non-SHAI subset WITH a populated SHAI dir
+        against the non-SHAI subset computed with NO SHAI dir — they must be
+        identical. On unfixed code both already equal the full listing, so this
+        passes now and remains valid after the fix.
+        """
+        from cli_agent_orchestrator.utils.agent_profiles import list_agent_profiles
+
+        self._wire_non_shai(
+            monkeypatch,
+            local_names=local_names,
+            provider_names=provider_names,
+            builtin_names=builtin_names,
+        )
+
+        # Unique per-example subdir: tmp_path is reused across hypothesis
+        # examples, so a fresh name keeps each example's SHAI dir independent.
+        import uuid
+
+        base = tmp_path / uuid.uuid4().hex
+
+        # Baseline: no SHAI dir present (points the default arg at a missing path).
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR",
+            base / "absent-shai",
+        )
+        baseline = list_agent_profiles()
+        baseline_non_shai = self._non_shai_subset(baseline)
+
+        # Now populate the SHAI dir with (possibly colliding) native agents.
+        shai_dir = base / "shai-agents"
+        self._write_native_shai_agents(shai_dir, shai_names)
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR", shai_dir
+        )
+        with_shai = list_agent_profiles()
+        with_shai_non_shai = self._non_shai_subset(with_shai)
+
+        # Per the design's precedence rule, SHAI is scanned AFTER the local,
+        # provider, and extra sources but BEFORE the built-in store (Change 2:
+        # "provider-tier precedence ... shadowed by any earlier-scanned
+        # same-named profile"). Two consequences for the non-SHAI subset:
+        #   1. A built-in-ONLY name that also names a native SHAI agent is won by
+        #      SHAI (built-in is scanned later), so it becomes a "shai" entry and
+        #      correctly drops out of the non-SHAI subset.
+        #   2. A name won by an EARLIER source (local/provider/extra) keeps that
+        #      winner, but — because SHAI participates in conflict flagging
+        #      uniformly — the winner's duplicated_in gains "shai" when a native
+        #      SHAI agent shares the name. Every other field is unchanged.
+        earlier_non_shai_names = set(local_names) | set(provider_names)
+        shai_name_set = set(shai_names)
+        expected_names = {
+            name
+            for name in baseline_non_shai
+            if name in earlier_non_shai_names or name not in shai_name_set
+        }
+
+        # SHAI never ADDS a non-SHAI entry, and only ever removes a built-in name
+        # it legitimately wins: the surviving non-SHAI name set is exactly this.
+        assert set(with_shai_non_shai) == expected_names
+
+        # Sort order of the whole listing is preserved (alphabetical by name).
+        names = [p["name"] for p in with_shai]
+        assert names == sorted(names)
+
+        # Every surviving non-SHAI winner keeps its name/source/loadable and
+        # discovery fields byte-for-byte; duplicated_in is unchanged except that
+        # a colliding native SHAI agent appends "shai" to the shadowed-source
+        # list (uniform conflict flagging), never reordering the earlier entries.
+        for name in expected_names:
+            got = with_shai_non_shai[name]
+            base_entry = baseline_non_shai[name]
+            for field in ("name", "source", "loadable", "description", "capabilities", "tags"):
+                if field in base_entry:
+                    assert got.get(field) == base_entry.get(field)
+            base_dupe = list(base_entry.get("duplicated_in", []))
+            if name in shai_name_set:
+                # SHAI is scanned between the earlier sources and the built-in
+                # store, so "shai" lands in duplicated_in just before any
+                # shadowed "built-in" entry and after any earlier shadowed ones.
+                insert_at = base_dupe.index("built-in") if "built-in" in base_dupe else len(base_dupe)
+                expected_dupe = base_dupe[:insert_at] + ["shai"] + base_dupe[insert_at:]
+            else:
+                expected_dupe = base_dupe
+            assert got.get("duplicated_in") == expected_dupe
+
+    @settings(
+        max_examples=50,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    @given(
+        local_names=st.lists(_NAME, max_size=4, unique=True),
+        builtin_names=st.lists(_NAME, max_size=4, unique=True),
+        dir_state=st.sampled_from(["absent", "empty", "files", "malformed"]),
+    )
+    def test_non_shai_listing_invariant_across_shai_dir_states(
+        self,
+        local_names,
+        builtin_names,
+        dir_state,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Random SHAI_USER_AGENTS_DIR states (absent, empty, files present, one
+        unreadable/malformed): the non-SHAI listing is invariant and no
+        exception escapes list_agent_profiles().
+
+        Validates: Requirements 3.3
+        """
+        from cli_agent_orchestrator.utils.agent_profiles import list_agent_profiles
+
+        self._wire_non_shai(
+            monkeypatch,
+            local_names=local_names,
+            provider_names=[],
+            builtin_names=builtin_names,
+        )
+
+        # Unique per-example subdir: hypothesis reuses tmp_path across examples,
+        # so a fresh name keeps each SHAI dir state independent (an "absent"
+        # example must not see a dir an earlier "files" example created).
+        import uuid
+
+        base = tmp_path / uuid.uuid4().hex
+
+        # Reference non-SHAI listing with a definitely-absent SHAI dir.
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR",
+            base / "reference-absent",
+        )
+        reference = self._non_shai_subset(list_agent_profiles())
+
+        # Build the generated SHAI dir state.
+        shai_dir = base / "shai-agents"
+        if dir_state == "absent":
+            pass  # never created
+        elif dir_state == "empty":
+            shai_dir.mkdir(parents=True, exist_ok=True)
+        elif dir_state == "files":
+            self._write_native_shai_agents(shai_dir, ["alpha", "beta"])
+        elif dir_state == "malformed":
+            shai_dir.mkdir(parents=True, exist_ok=True)
+            # One valid, one malformed (non-JSON) native file.
+            self._write_native_shai_agents(shai_dir, ["good"])
+            (shai_dir / "broken.config.json").write_text("{ not valid json", encoding="utf-8")
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR", shai_dir
+        )
+
+        # Must not raise regardless of SHAI dir state.
+        result = list_agent_profiles()
+
+        # The non-SHAI subset is invariant across every SHAI dir state.
+        assert self._non_shai_subset(result) == reference
+
+    @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
+    @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
+    @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")
+    @patch("cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR")
+    @patch("cli_agent_orchestrator.utils.agent_profiles.resources")
+    def test_discovery_does_not_modify_shai_user_dir(
+        self,
+        mock_resources,
+        mock_local_dir,
+        mock_scan,
+        mock_get_agent_dirs,
+        mock_get_extra_dirs,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Read-only contract: after discovery runs against a populated
+        SHAI_USER_AGENTS_DIR, nothing under SHAI_USER_* is created or modified
+        (directory contents and mtimes unchanged).
+
+        Validates: Requirements 3.1, 3.4
+        """
+        from cli_agent_orchestrator.utils.agent_profiles import list_agent_profiles
+
+        mock_agent_store = MagicMock()
+        mock_agent_store.iterdir.return_value = []
+        mock_resources.files.return_value = mock_agent_store
+        mock_local_dir.exists.return_value = False
+
+        shai_dir = tmp_path / "shai-agents"
+        self._write_native_shai_agents(shai_dir, ["AGENTS_CONTROL_AGENT", "worker"])
+        self._write_native_shai_agents(shai_dir, ["legacy"], legacy=True)
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR", shai_dir
+        )
+
+        def snapshot(root: Path):
+            # name -> (size, mtime_ns) for the dir and every entry under it.
+            snap = {}
+            for p in sorted(root.rglob("*")):
+                st_ = p.stat()
+                snap[str(p.relative_to(root))] = (p.is_file(), st_.st_size, st_.st_mtime_ns)
+            dir_st = root.stat()
+            snap["."] = (False, None, dir_st.st_mtime_ns)
+            return snap
+
+        before = snapshot(shai_dir)
+
+        list_agent_profiles()
+
+        after = snapshot(shai_dir)
+        assert after == before, (
+            "read-only contract violated: discovery created or modified "
+            f"something under SHAI_USER_AGENTS_DIR. before={before} after={after}"
+        )
 
 
 class TestScanDirectory:

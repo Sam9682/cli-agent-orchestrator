@@ -40,6 +40,15 @@ PROVIDER_ENFORCEMENT: Dict[str, str] = {
     # select the installed agent and change nothing in it (see
     # INSTALL_TIME_PROVIDERS and describe_enforcement).
     "opencode_cli": NATIVE,
+    # SHAI tool restriction is native and install-time: `cao install` writes the
+    # resolved allowlist into the agent JSON's ``tools.builtin`` /
+    # ``tools.builtin_excluded`` (tool_mapping.shai_cli), and SHAI removes an
+    # excluded builtin from the toolset presented to the model at launch — a
+    # live probe confirmed an agent with ``builtin_excluded: ["bash"]`` had no
+    # shell tool and raised no approval dialog. There is no per-launch
+    # tool-restriction CLI flag, so like OpenCode/kiro the policy is the
+    # INSTALLED agent's (see INSTALL_TIME_PROVIDERS).
+    "shai_cli": NATIVE,
     "grok_cli": NATIVE,  # --permission-mode dontAsk with --allow/--deny
     "kimi_cli": PROMPT,
     "codex": PROMPT,
@@ -56,7 +65,7 @@ PROVIDER_ENFORCEMENT: Dict[str, str] = {
 # role change) does not reach the provider; what runs is what `cao install`
 # wrote. The launch gate must say so instead of attaching the native promise
 # to the requested list.
-INSTALL_TIME_PROVIDERS = frozenset({"opencode_cli", "kiro_cli"})
+INSTALL_TIME_PROVIDERS = frozenset({"opencode_cli", "kiro_cli", "shai_cli"})
 
 
 def enforcement_for(provider: str) -> str:

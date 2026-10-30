@@ -25,6 +25,7 @@ from cli_agent_orchestrator.providers.minimax_code import MiniMaxCodeProvider
 from cli_agent_orchestrator.providers.mock_cli import MockCliProvider
 from cli_agent_orchestrator.providers.omp import OmpProvider
 from cli_agent_orchestrator.providers.opencode_cli import OpenCodeCliProvider
+from cli_agent_orchestrator.providers.shai_cli import SHAICliProvider
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class ProviderManager:
             ProviderType.COPILOT_CLI.value: CopilotCliProvider,
             ProviderType.KIMI_CLI.value: KimiCliProvider,
             ProviderType.OPENCODE_CLI.value: OpenCodeCliProvider,
+            ProviderType.SHAI_CLI.value: SHAICliProvider,
             ProviderType.OMP.value: OmpProvider,
             ProviderType.HERMES.value: HermesProvider,
             ProviderType.CURSOR_CLI.value: CursorCliProvider,
@@ -151,6 +153,15 @@ class ProviderManager:
                     provider.restore_runtime_variant(provider_variant)
             elif provider_type == ProviderType.OPENCODE_CLI.value:
                 provider = OpenCodeCliProvider(
+                    terminal_id,
+                    tmux_session,
+                    tmux_window,
+                    agent_profile,
+                    allowed_tools,
+                    model=model,
+                )
+            elif provider_type == ProviderType.SHAI_CLI.value:
+                provider = SHAICliProvider(
                     terminal_id,
                     tmux_session,
                     tmux_window,

@@ -223,6 +223,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add SHAI (ovh/shai) as the `shai_cli` provider: OVHcloud's Rust terminal
+  coding agent, now a first-class CAO CLI-agent provider. Includes native agent
+  discovery (a read-only import of the user's `~/.config/shai/agents`),
+  CAO-managed config isolation through `XDG_CONFIG_HOME`, native install-time
+  tool-restriction enforcement, multi-turn TUI orchestration, and provider docs.
+
 - Ephemeral agents accept `model_tier: "auto"` (#1068). At launch, after the claim and before the bind, `assign` and both `handoff` paths ask `model.route` for that name only; explicit and omitted tiers never ask. Off and shadow launch on `ephemeral.default_tier`; on applies a confident answer capped into `[min_tier, max_tier]`, and falls back on any unusable answer. `auto` needs both `ephemeral.min_tier` and `ephemeral.max_tier` (`auto_requires_bounds`) and a `claim_lease_seconds` of at least `decisions.on_timeout_ms / 1000 + 30`. The ephemeral archive records the decision record ids. `effort: "auto"` still refuses.
 
 - Decision policy bounds take an optional model tier floor (#1068, #810): an explicit tier below it is refused as `below_floor`, a decider answer below it is capped up to it, and mappings are required from the floor to the ceiling. A delegation to an ephemeral target can carry the creator's description, redacted, in `profile_description`.

@@ -544,6 +544,7 @@ CAO translates `allowedTools` into each provider's native restriction mechanism:
 | Claude Code | Hard | `--disallowedTools` flags block specific tools |
 | Copilot CLI | Hard | `--deny-tool` flags override `--allow-all` |
 | OpenCode CLI | Hard | `permission:` block written at install time from the profile; launch-time `--allowed-tools` and role overrides do not change it |
+| SHAI CLI | Hard (install time) | `tools.builtin` / `tools.builtin_excluded` in the agent JSON is written at install time from the resolved `allowedTools`; SHAI removes an excluded built-in from the agent's toolset at runtime (probe-confirmed); launch-time `--allowed-tools` and role overrides select the installed agent and do not change it |
 | Grok Build CLI | Hard | `--permission-mode dontAsk` with `--allow`/`--deny` |
 | Kimi CLI | Soft | Security system prompt (no native mechanism) |
 | Codex | Soft | Security system prompt (no native mechanism) |

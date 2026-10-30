@@ -21,6 +21,9 @@ coverage.xml
 # IDEs
 .vscode/
 .idea/
+.kiro/
+.shai/
+.hypothesis/
 
 # OS
 .DS_Store

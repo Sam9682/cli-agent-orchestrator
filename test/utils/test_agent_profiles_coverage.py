@@ -296,6 +296,10 @@ class TestListAgentProfilesEdgeCases:
         assert broken_profile["description"] == ""
         assert broken_profile["source"] == "built-in"
 
+    @patch(
+        "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR",
+        Path("/nonexistent/shai/agents"),
+    )
     @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
     @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
     @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")
@@ -367,6 +371,10 @@ class TestListAgentProfilesEdgeCases:
         custom_calls = [c for c in mock_scan.call_args_list if c[0][1] == "custom"]
         assert len(custom_calls) == 2
 
+    @patch(
+        "cli_agent_orchestrator.utils.shai_config.SHAI_USER_AGENTS_DIR",
+        Path("/nonexistent/shai/agents"),
+    )
     @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
     @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs", return_value={})
     @patch("cli_agent_orchestrator.utils.agent_profiles._scan_directory")

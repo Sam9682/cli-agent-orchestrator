@@ -314,6 +314,30 @@ def _list_installed_profiles() -> List[Dict]:
         _scan_directory(Path(extra_dir), "custom", profiles, name_sources)
         scanned_paths.add(norm)
 
+    # 3b. Native SHAI user agents (~/.config/shai/agents) — discovered read-only
+    #     via the SHAI provider helper and given provider-tier precedence: they
+    #     win over the built-in store (scanned next) but are shadowed by any
+    #     earlier-scanned same-named profile (first-found-wins, like
+    #     _scan_directory). The helper never writes and returns [] for an
+    #     absent/unreadable dir; wrap defensively so an unexpected error
+    #     contributes nothing and never breaks the rest of the listing.
+    try:
+        from cli_agent_orchestrator.utils.shai_config import discover_user_agents
+
+        for metadata in discover_user_agents():
+            profile_name = metadata["name"]
+            name_sources.setdefault(profile_name, []).append("shai")
+            if profile_name in profiles:
+                continue
+            profiles[profile_name] = {
+                "name": profile_name,
+                "source": "shai",
+                "loadable": False,
+                **_discovery_fields(metadata),
+            }
+    except Exception as e:
+        logger.debug(f"Could not scan native SHAI agents: {e}")
+
     # 4. Built-in agent store — scanned LAST so on-disk copies win (matches
     # _read_agent_profile_source's lookup order).
     try:

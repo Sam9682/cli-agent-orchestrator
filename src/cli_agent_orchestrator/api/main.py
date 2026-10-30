@@ -3376,6 +3376,7 @@ async def list_providers_endpoint(
         "omp": "omp",
         "grok_cli": "grok",
         "mcode": "mcode",
+        "shai_cli": "shai",
     }
     result = []
     for provider, binary in provider_binaries.items():

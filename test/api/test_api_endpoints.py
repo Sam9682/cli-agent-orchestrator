@@ -150,7 +150,7 @@ class TestAgentProviders:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 12
+        assert len(data) == 13
         names = [p["name"] for p in data]
         assert "kiro_cli" in names
         assert "claude_code" in names
@@ -215,6 +215,151 @@ class TestAgentProviders:
         assert providers_dict["omp"]["binary"] == "omp"
         assert providers_dict["grok_cli"]["binary"] == "grok"
         assert providers_dict["mcode"]["binary"] == "mcode"
+
+    # ── SHAI discovery-fix: Property 1 (Bug Condition) — provider surface ──
+    #
+    # Bug condition per design: isBugCondition(PROVIDER_LISTING) holds when
+    # "shai_cli" IN PROVIDERS but NOT IN providerListingResult. These assertions
+    # encode the EXPECTED post-fix behavior; on the unfixed `provider_binaries`
+    # dict (which has no "shai_cli" key) they FAIL, and that failure is the
+    # counterexample that proves the bug. After Change 1 wires "shai_cli" ->
+    # "shai" into the dict, the same assertions pass.
+
+    def test_providers_listing_includes_shai_cli_when_installed(self, client):
+        """GET /agents/providers surfaces shai_cli with binary 'shai' and
+        installed=True when `shutil.which('shai')` resolves.
+
+        shai_cli IS a member of PROVIDERS (ProviderType.SHAI_CLI), so the
+        provider listing must report it exactly like every other provider:
+        {"name": "shai_cli", "binary": "shai", "installed": which(...) is not None}.
+
+        On UNFIXED code this FAILS (the hardcoded provider_binaries dict omits
+        shai_cli) — the failure is the expected counterexample.
+        """
+        from cli_agent_orchestrator.constants import PROVIDERS
+
+        # Precondition of the bug condition: shai_cli is a registered provider.
+        assert "shai_cli" in PROVIDERS
+
+        with patch("shutil.which", return_value="/usr/bin/shai"):
+            response = client.get("/agents/providers")
+
+        assert response.status_code == 200
+        data = response.json()
+        by_name = {p["name"]: p for p in data}
+
+        # Expected post-fix: shai_cli present with its binary and install status.
+        assert "shai_cli" in by_name, (
+            "BUG (expected on unfixed code): shai_cli is a PROVIDERS member but "
+            f"absent from the provider listing. Returned names: {sorted(by_name)}"
+        )
+        assert by_name["shai_cli"]["binary"] == "shai"
+        assert by_name["shai_cli"]["installed"] is True
+
+    def test_providers_listing_includes_shai_cli_when_not_installed(self, client):
+        """shai_cli appears with installed=False when `shutil.which('shai')` is None.
+
+        Mirrors the shutil.which-based install semantics of every other
+        provider. FAILS on unfixed code (shai_cli absent entirely).
+        """
+        with patch("shutil.which", return_value=None):
+            response = client.get("/agents/providers")
+
+        assert response.status_code == 200
+        data = response.json()
+        by_name = {p["name"]: p for p in data}
+
+        assert "shai_cli" in by_name, (
+            "BUG (expected on unfixed code): shai_cli missing from provider listing"
+        )
+        assert by_name["shai_cli"]["binary"] == "shai"
+        assert by_name["shai_cli"]["installed"] is False
+
+    def test_providers_listing_count_is_thirteen_with_shai(self, client):
+        """With SHAI wired in, the provider listing has 13 entries (12 + shai_cli).
+
+        On UNFIXED code this FAILS: the listing has exactly 12 entries and
+        shai_cli is not among them. Counterexample: len == 12, no shai_cli.
+        """
+        with patch("shutil.which", return_value="/usr/bin/dummy"):
+            response = client.get("/agents/providers")
+
+        assert response.status_code == 200
+        data = response.json()
+        names = [p["name"] for p in data]
+
+        assert len(data) == 13, (
+            "BUG (expected on unfixed code): provider listing has "
+            f"{len(data)} entries (expected 13 including shai_cli). Names: {sorted(names)}"
+        )
+        assert "shai_cli" in names
+
+    # ── SHAI discovery-fix: Property 2 (Preservation) — provider surface ──
+    #
+    # Preservation per design: adding shai_cli to the listing must not alter how
+    # the 12 existing providers are reported. These assertions encode the ACTUAL
+    # non-SHAI provider listing observed on unfixed code — each existing
+    # provider's exact binary name and its shutil.which-based installed value.
+    # They are expressed against the non-SHAI SUBSET (the 12 names), so they pass
+    # now (SHAI absent) and remain valid after the fix (SHAI only adds shai_cli).
+
+    # The 12 existing providers and their binary names (the preserved contract).
+    _EXISTING_PROVIDER_BINARIES = {
+        "kiro_cli": "kiro-cli",
+        "claude_code": "claude",
+        "codex": "codex",
+        "hermes": "hermes",
+        "kimi_cli": "kimi",
+        "copilot_cli": "copilot",
+        "opencode_cli": "opencode",
+        "cursor_cli": "agent",
+        "antigravity_cli": "agy",
+        "omp": "omp",
+        "grok_cli": "grok",
+        "mcode": "mcode",
+    }
+
+    def test_existing_providers_binaries_preserved(self, client):
+        """The 12 existing providers keep their exact binary names.
+
+        Validates: Requirements 3.1
+
+        Non-SHAI subset invariant: independent of whether shai_cli is wired in,
+        each of the 12 existing providers must appear with the same binary.
+        """
+        with patch("shutil.which", return_value=None):
+            response = client.get("/agents/providers")
+
+        assert response.status_code == 200
+        by_name = {p["name"]: p for p in response.json()}
+
+        for name, binary in self._EXISTING_PROVIDER_BINARIES.items():
+            assert name in by_name, f"existing provider {name!r} dropped from listing"
+            assert by_name[name]["binary"] == binary
+
+    def test_existing_providers_installed_semantics_preserved(self, client):
+        """The 12 existing providers keep shutil.which-based installed semantics.
+
+        Validates: Requirements 3.1
+
+        With shutil.which resolving only the kiro-cli binary, exactly kiro_cli
+        reports installed=True among the existing providers and the rest report
+        installed=False — unchanged by the SHAI fix.
+        """
+
+        def mock_which(binary):
+            return "/usr/bin/kiro-cli" if binary == "kiro-cli" else None
+
+        with patch("shutil.which", side_effect=mock_which):
+            response = client.get("/agents/providers")
+
+        assert response.status_code == 200
+        by_name = {p["name"]: p for p in response.json()}
+
+        for name, binary in self._EXISTING_PROVIDER_BINARIES.items():
+            assert name in by_name, f"existing provider {name!r} dropped from listing"
+            expected = binary == "kiro-cli"
+            assert by_name[name]["installed"] is expected
 
 
 # ── Skills endpoint ──────────────────────────────────────────────────

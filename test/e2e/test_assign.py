@@ -732,3 +732,47 @@ class TestMiniMaxCodeAssign:
 
     def test_assign_with_callback(self, require_minimax_code):
         _run_assign_with_callback_test(provider="mcode")
+
+
+# ---------------------------------------------------------------------------
+# SHAI CLI provider
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+class TestSHAICliAssign:
+    """E2E assign tests for the SHAI CLI provider using examples/assign/ profiles.
+
+    Requires:
+    - shai binary on PATH (skip otherwise via require_shai_cli fixture)
+    - Running CAO server
+    - Agent profiles installed for shai_cli:
+        cao install examples/assign/data_analyst.md --provider shai_cli
+        cao install examples/assign/report_generator.md --provider shai_cli
+        cao install developer --provider shai_cli  # for callback test
+
+    Run:
+        uv run pytest -m e2e test/e2e/test_assign.py -k SHAI -v
+    """
+
+    def test_assign_data_analyst(self, require_shai_cli):
+        """SHAI CLI data_analyst receives dataset, performs statistical analysis."""
+        _run_assign_test(
+            provider="shai_cli",
+            agent_profile="data_analyst",
+            task_message=DATA_ANALYST_TASK,
+            content_keywords=DATA_ANALYST_KEYWORDS,
+        )
+
+    def test_assign_report_generator(self, require_shai_cli):
+        """SHAI CLI report_generator creates a report template."""
+        _run_assign_test(
+            provider="shai_cli",
+            agent_profile="report_generator",
+            task_message=REPORT_GENERATOR_TASK,
+            content_keywords=REPORT_GENERATOR_KEYWORDS,
+        )
+
+    def test_assign_with_callback(self, require_shai_cli):
+        """SHAI CLI full round-trip: worker completes → sends result → supervisor receives."""
+        _run_assign_with_callback_test(provider="shai_cli")
