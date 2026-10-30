@@ -22,6 +22,23 @@ _HELP = (
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 _RELEASED_ROOT_HELP = (_FIXTURES_DIR / "kiro_cli_2_13_0_root_help.txt").read_text(encoding="utf-8")
 _RELEASED_CHAT_HELP = (_FIXTURES_DIR / "kiro_cli_2_13_0_chat_help.txt").read_text(encoding="utf-8")
+_LEGACY_ROOT_HELP = (_FIXTURES_DIR / "kiro_cli_1_28_3_root_help.txt").read_text(encoding="utf-8")
+_LEGACY_CHAT_HELP = (_FIXTURES_DIR / "kiro_cli_1_28_3_chat_help.txt").read_text(encoding="utf-8")
+
+
+def _help_runner(root_help, chat_help, version):
+    """Build a bounded root/chat/version probe runner for one wrapper fixture."""
+
+    def _run(command, **_kwargs):
+        if command == ["kiro-cli", "--help"]:
+            output = root_help
+        elif command == ["kiro-cli", "chat", "--help"]:
+            output = chat_help
+        else:
+            output = f"kiro-cli version {version}"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    return _run
 
 
 def _runner(command, **_kwargs):
@@ -398,3 +415,114 @@ def test_legacy_ui_is_not_a_requested_capability():
     for yolo in (False, True):
         requested = requested_kiro_capabilities(KiroEngine.V2, model=None, yolo=yolo)
         assert "ui" not in requested
+
+
+# =====================================================================
+# Engine-flag detection fix — deterministic unit coverage (Task 4.1)
+#
+# These cover the design's "Unit Tests" bullets for
+# kiro-agent-engine-flag-detection-fix. They are the deterministic,
+# example-based complement to the property-based exploration and
+# preservation suites in test_kiro_engine_flag_detection_bug.py and
+# test_kiro_engine_flag_detection_preservation.py (not duplicated here).
+# =====================================================================
+
+
+def test_probe_v2_against_legacy_1_28_3_fixtures_succeeds_with_empty_agent_engines():
+    """Probe v2 against the 1.28.3 legacy fixtures succeeds and reports no selector.
+
+    The 1.28.3 wrapper declares no ``--agent-engine`` option at all, so it is a
+    legacy wrapper the probe must accept with an empty ``agent_engines``.
+
+    Validates: Requirements 2.1, 2.4
+    """
+    runner = _help_runner(_LEGACY_ROOT_HELP, _LEGACY_CHAT_HELP, "1.28.3")
+
+    capabilities = probe_kiro_capabilities(
+        KiroEngine.V2,
+        {"profile", "model", "trust"},
+        runner=runner,
+    )
+
+    assert capabilities.version == "1.28.3"
+    assert capabilities.agent_engines == frozenset()
+    assert not capabilities.supports("--agent-engine")
+    assert capabilities.supports("--agent")
+    assert capabilities.supports("--trust-all-tools")
+    assert capabilities.supports("--model")
+
+
+def test_build_command_omits_agent_engine_for_legacy_and_includes_it_for_modern():
+    """build_kiro_command drops the engine flag for a legacy wrapper, keeps it for modern.
+
+    Validates: Requirements 2.2, 3.1
+    """
+    legacy_command = build_kiro_command(
+        KiroEngine.V2,
+        "developer",
+        advertises_agent_engine=False,
+    )
+    assert legacy_command == ["kiro-cli", "chat", "--agent", "developer"]
+    assert "--agent-engine" not in legacy_command
+
+    modern_command = build_kiro_command(
+        KiroEngine.V2,
+        "developer",
+        advertises_agent_engine=True,
+    )
+    assert modern_command == ["kiro-cli", "chat", "--agent-engine", "v2", "--agent", "developer"]
+
+
+def test_build_command_legacy_path_never_emits_legacy_ui_but_keeps_requested_flags():
+    """Legacy path omits --agent-engine/--legacy-ui while keeping --agent/--trust/--model.
+
+    Validates: Requirements 2.2, 2.4
+    """
+    command = build_kiro_command(
+        KiroEngine.V2,
+        "developer",
+        model="fixture-model",
+        yolo=True,
+        advertises_agent_engine=False,
+    )
+
+    assert command == [
+        "kiro-cli",
+        "chat",
+        "--trust-all-tools",
+        "--model",
+        "fixture-model",
+        "--agent",
+        "developer",
+    ]
+    assert "--agent-engine" not in command
+    assert "--legacy-ui" not in command
+
+
+def test_probe_rejects_declared_selector_without_v2_even_though_guard_is_scoped():
+    """A declared-but-not-v2 selector still raises --agent-engine=v2.
+
+    The relaxed empty-selector path must not weaken the explicit-v2 guard: when
+    the wrapper DOES advertise ``--agent-engine`` but omits ``v2`` the probe
+    keeps rejecting with the existing capability error.
+
+    Validates: Requirement 3.2
+    """
+    chat_help = (
+        "Usage: kiro-cli-chat chat [OPTIONS] [INPUT]\n\n"
+        "Options:\n"
+        "      --agent <AGENT>\n          Context profile to use\n"
+        "  -a, --trust-all-tools\n          Allows the model to use any tool\n"
+        "      --agent-engine v1|v3\n          Agent engine to use\n"
+    )
+    runner = _help_runner(_RELEASED_ROOT_HELP, chat_help, "2.13.0")
+
+    with pytest.raises(KiroCapabilityError, match="accept 'v2'") as exc_info:
+        probe_kiro_capabilities(
+            KiroEngine.V2,
+            {"profile", "trust"},
+            runner=runner,
+        )
+
+    assert exc_info.value.kind == "unsupported_capability"
+    assert exc_info.value.capability == "--agent-engine=v2"

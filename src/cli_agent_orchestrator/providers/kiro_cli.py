@@ -240,6 +240,7 @@ class KiroCliProvider(BaseProvider):
         allowed_tools: Optional[list] = None,
         engine: Optional[KiroEngine] = None,
         model: Optional[str] = None,
+        advertises_agent_engine: bool = True,
     ):
         """Initialize Kiro CLI provider with terminal context.
 
@@ -253,6 +254,14 @@ class KiroCliProvider(BaseProvider):
             model: Explicit per-call override for profile.model (see
                 _get_profile_model), e.g. a handoff/assign caller pinning a
                 specific model for one worker without a dedicated profile.
+            advertises_agent_engine: Whether the launch-time capability probe
+                observed the wrapper advertising the ``--agent-engine`` selector
+                (``KiroCapabilities.agent_engines`` non-empty). Threaded into
+                ``build_kiro_command`` so a legacy wrapper that genuinely lacks
+                the selector (e.g. kiro-cli 1.28.3) launches ``kiro-cli chat``
+                without ``--agent-engine``. Defaults to ``True`` (modern
+                wrapper) for callers that construct the provider without a probe
+                result; the launch path passes the probed value.
         """
         super().__init__(terminal_id, session_name, window_name, allowed_tools)
         self._initialized = False
@@ -263,6 +272,10 @@ class KiroCliProvider(BaseProvider):
         self._agent_profile = agent_profile
         self._engine = resolve_kiro_engine(persisted=engine)
         self._model = model
+        # Whether the launch-time probe saw the wrapper advertise --agent-engine.
+        # A legacy wrapper (empty agent_engines) launches `kiro-cli chat` without
+        # the selector flag; see build_kiro_command.
+        self._advertises_agent_engine = advertises_agent_engine
         # The evidence that this runtime's TUI header named the agent (#1074).
         # Only _verify_agent_identity sets it, and only once the check passed;
         # terminal_service records it on the row before any task is typed.
@@ -417,6 +430,7 @@ class KiroCliProvider(BaseProvider):
             self._agent_profile,
             model=model,
             yolo=True,
+            advertises_agent_engine=self._advertises_agent_engine,
         )
         command = shlex.join(base_args)
         # Arm the StatusMonitor stickiness gate before launching the CLI so

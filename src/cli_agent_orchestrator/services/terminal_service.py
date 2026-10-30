@@ -1828,6 +1828,10 @@ async def _create_terminal_unguarded(
             requested_model=launch_model,
         )
 
+        # Whether the Kiro wrapper advertises the --agent-engine selector,
+        # resolved from the launch-time probe below. Defaults to True (modern
+        # wrapper) and is only consulted for the kiro_cli provider.
+        kiro_advertises_agent_engine = True
         if provider == ProviderType.KIRO_CLI.value:
             resolved_engine = resolve_kiro_engine(
                 explicit=engine,
@@ -1854,7 +1858,7 @@ async def _create_terminal_unguarded(
             )
             probe = kiro_capability_probe or probe_kiro_capabilities
             try:
-                await asyncio.to_thread(probe, resolved_engine, requested)
+                kiro_capabilities = await asyncio.to_thread(probe, resolved_engine, requested)
             except KiroCapabilityError:
                 if model or launch_plan is None or launch_plan.model is None:
                     raise
@@ -1862,11 +1866,18 @@ async def _create_terminal_unguarded(
                 requested = requested_kiro_capabilities(
                     resolved_engine, model=launch_model, yolo=True
                 )
-                await asyncio.to_thread(probe, resolved_engine, requested)
+                kiro_capabilities = await asyncio.to_thread(probe, resolved_engine, requested)
                 decision_not_honored = True
                 model_honored = ProviderManager.provider_class(provider).honors_model(
                     agent_profile=agent_profile, profile=profile, requested_model=launch_model
                 )
+            # A legacy wrapper advertises no engine selector (empty
+            # agent_engines); the provider must then launch `kiro-cli chat`
+            # without --agent-engine. Carry that probed fact to provider
+            # construction so initialize() builds the correct command without a
+            # second subprocess probe on the hot path. A test double probe may
+            # return None; default to advertising (modern wrapper) in that case.
+            kiro_advertises_agent_engine = bool(getattr(kiro_capabilities, "agent_engines", True))
             if resolved_engine == KiroEngine.KAS:
                 raise KiroPhase0KASError(
                     bool(profile and (profile.allowedTools or profile.toolsSettings))
@@ -2552,6 +2563,7 @@ async def _create_terminal_unguarded(
             engine=resolved_engine,
             resume_session_id=resume_session_id,
             session_id=fresh_claude_session_id,
+            advertises_agent_engine=kiro_advertises_agent_engine,
         )
 
         # Deferred-init path: return fast so callers (e.g. MCP assign) do not

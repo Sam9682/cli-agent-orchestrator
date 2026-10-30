@@ -1,0 +1,23 @@
+AI assistant in your terminal
+
+Usage: kiro-cli-chat chat [OPTIONS] [INPUT]
+
+Arguments:
+  [INPUT]
+          The first question to ask
+
+Options:
+      --agent <AGENT>
+          Context profile to use
+
+      --model <MODEL>
+          Current model to use
+
+  -a, --trust-all-tools
+          Allows the model to use any tool without asking for confirmation
+
+      --legacy-ui
+          Use the legacy harness
+
+  -v, --verbose...
+          Increase logging verbosity

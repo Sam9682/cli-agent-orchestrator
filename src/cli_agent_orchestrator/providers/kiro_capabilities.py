@@ -344,7 +344,16 @@ def probe_kiro_capabilities(
         if version_match:
             version = version_match.group(1)
 
-    required = ["--agent-engine" if engine == KiroEngine.V2 else "--v3"]
+    # The engine selector is deliberately NOT part of this generic required
+    # list for v2: whether `--agent-engine` is advertised is decided below from
+    # `agent_engines`, so a legacy wrapper that genuinely lacks it is accepted
+    # while a declared-but-not-'v2' selector is still rejected. `--v3` remains a
+    # hard requirement for kas, and `_flags_from_help` still governs every other
+    # requested flag (--agent, --trust-all-tools, --model) unchanged. Keeping
+    # this loop ahead of the engine-selector guard preserves the existing error
+    # ordering (e.g. a genuinely-missing --trust-all-tools raises before any
+    # --agent-engine=v2 check).
+    required = [] if engine == KiroEngine.V2 else ["--v3"]
     for capability in requested:
         try:
             required.append(_FLAG_CAPABILITIES[capability])
@@ -363,28 +372,43 @@ def probe_kiro_capabilities(
                 capability=flag,
                 version=version,
             )
-    if engine == KiroEngine.V2 and not agent_engines:
-        detail = f" Detected wrapper version: {version}." if version else ""
-        raise KiroCapabilityError(
-            "unsupported_capability",
-            engine,
-            "Kiro engine 'v2' requires Kiro wrapper help to advertise "
-            "'--agent-engine' with an explicit 'v2' value, but it did not."
-            f"{detail}",
-            capability="--agent-engine=v2",
-            version=version,
-        )
-    if engine == KiroEngine.V2 and KiroEngine.V2.value not in agent_engines:
-        detail = f" Detected wrapper version: {version}." if version else ""
-        raise KiroCapabilityError(
-            "unsupported_capability",
-            engine,
-            "Kiro engine 'v2' requires '--agent-engine' to accept 'v2', "
-            "but the wrapper did not advertise that value."
-            f"{detail}",
-            capability="--agent-engine=v2",
-            version=version,
-        )
+    # A wrapper that declares no --agent-engine option AT ALL is a legacy
+    # wrapper that predates the engine selector (e.g. kiro-cli 1.28.3). It
+    # launches `kiro-cli chat` without the flag and still loads MCP tools, so
+    # the probe treats it as supported and skips BOTH engine-selector guards
+    # below. "Genuinely absent" is keyed on the formal option declaration
+    # (`--agent-engine` not in `flags`), NOT on an empty `agent_engines`.
+    #
+    # The selector CAN be formally declared while its value set is empty (values
+    # presented only in prose, or a malformed/truncated declaration). That is a
+    # wrapper that DOES advertise engine selection but with no usable value, so
+    # it must still be rejected with the existing "explicit 'v2'" error. A
+    # declaration that lists values but omits v2 (e.g. `v1|v3`) is rejected with
+    # the existing "accept 'v2'" error. Both messages/capabilities are preserved
+    # exactly; only the no-declaration-line case changes (now accepted).
+    if engine == KiroEngine.V2 and "--agent-engine" in flags:
+        if not agent_engines:
+            detail = f" Detected wrapper version: {version}." if version else ""
+            raise KiroCapabilityError(
+                "unsupported_capability",
+                engine,
+                "Kiro engine 'v2' requires Kiro wrapper help to advertise "
+                "'--agent-engine' with an explicit 'v2' value, but it did not."
+                f"{detail}",
+                capability="--agent-engine=v2",
+                version=version,
+            )
+        if KiroEngine.V2.value not in agent_engines:
+            detail = f" Detected wrapper version: {version}." if version else ""
+            raise KiroCapabilityError(
+                "unsupported_capability",
+                engine,
+                "Kiro engine 'v2' requires '--agent-engine' to accept 'v2', "
+                "but the wrapper did not advertise that value."
+                f"{detail}",
+                capability="--agent-engine=v2",
+                version=version,
+            )
     return KiroCapabilities(
         version=version,
         flags=flags,
@@ -398,8 +422,21 @@ def build_kiro_command(
     *,
     model: Optional[str] = None,
     yolo: bool = False,
+    advertises_agent_engine: bool = True,
 ) -> list[str]:
     """Build a deterministic Kiro command without executing it.
+
+    ``advertises_agent_engine`` tells the builder whether the probed wrapper
+    advertises the ``--agent-engine`` selector (i.e. ``KiroCapabilities.
+    agent_engines`` is non-empty). On the v2 path the engine flag is emitted
+    only when the selector is advertised; a legacy wrapper that genuinely lacks
+    it (e.g. kiro-cli 1.28.3) launches plain ``kiro-cli chat …`` without
+    ``--agent-engine``, which it understands and which still loads MCP tools.
+    The default is ``True`` because every modern wrapper CAO has historically
+    targeted advertises the selector; only a probe that observed an empty
+    ``agent_engines`` should pass ``False``. The ``kas`` path, and the
+    ``--trust-all-tools``/``--model``/``--agent`` handling and ordering, are
+    unchanged.
 
     There is deliberately no ``legacy_ui`` option, because ``--legacy-ui`` can
     no longer be combined with the engine CAO pins. kiro-cli rejects the pair
@@ -409,7 +446,9 @@ def build_kiro_command(
     orchestration surface (``assign``/``handoff``/``report_outcome``) arrives
     over MCP, a v1 launch yields an agent that starts cleanly and then cannot
     orchestrate — silently, because the MCP server itself still boots and logs
-    "✓ cao-mcp-server loaded".
+    "✓ cao-mcp-server loaded". Omitting ``--agent-engine`` for a legacy wrapper
+    is distinct from adding ``--legacy-ui``: the legacy path below still never
+    emits ``--legacy-ui``.
 
     The startup consent dialog that ``--legacy-ui`` used to suppress is now
     auto-answered after launch instead; see
@@ -418,7 +457,9 @@ def build_kiro_command(
     if engine == KiroEngine.KAS:
         command = ["kiro-cli", "--v3", "chat"]
     else:
-        command = ["kiro-cli", "chat", "--agent-engine", KiroEngine.V2.value]
+        command = ["kiro-cli", "chat"]
+        if advertises_agent_engine:
+            command.extend(["--agent-engine", KiroEngine.V2.value])
         if yolo:
             command.append("--trust-all-tools")
     if model:

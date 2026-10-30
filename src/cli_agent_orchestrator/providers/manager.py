@@ -74,6 +74,7 @@ class ProviderManager:
         resume_session_id: Optional[str] = None,
         provider_variant: Optional[str] = None,
         session_id: Optional[str] = None,
+        advertises_agent_engine: bool = True,
     ) -> BaseProvider:
         """Create and store provider instance.
 
@@ -107,6 +108,7 @@ class ProviderManager:
                     allowed_tools,
                     engine=resolved_engine,
                     model=model,
+                    advertises_agent_engine=advertises_agent_engine,
                 )
             elif provider_type == ProviderType.CLAUDE_CODE.value:
                 provider = ClaudeCodeProvider(
