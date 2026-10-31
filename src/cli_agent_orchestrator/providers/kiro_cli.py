@@ -19,6 +19,7 @@ The provider detects the following terminal states:
 
 import asyncio
 import logging
+import math
 import re
 import shlex
 import time
@@ -194,10 +195,27 @@ STARTUP_PROMPT_BOTTOM_LINES = 15
 # KiroCliProvider._verify_agent_identity). A screen with no header row, only a
 # partial (elided or wrapped) name, or Kiro's plan mode is read again; a screen
 # whose header rows name any other agent is refused on the first read.
-# Provisional (#1074): about 2 s, after which a screen without a header (a
-# kiro-cli TUI change, say) is refused rather than trusted.
+#
+# IDENTITY_HEADER_READS is the FLOOR on the number of reads: the poll always
+# reads at least this many times before giving up, so behavior is a strict
+# superset of the old fixed loop (everything that confirmed within these reads
+# still confirms). #1074: the old loop stopped after exactly this many reads
+# (~2 s), which refused a slow-but-valid header that only rendered after the
+# window. The poll is now time-bounded (see _verify_agent_identity): it keeps
+# reading until a readable header is observed or the remaining startup budget
+# (provider_init_timeout, threaded from initialize()) is spent, floored at
+# IDENTITY_HEADER_MIN_WINDOW_S so the window is never shorter than the old ~2 s
+# and never longer than that remaining budget.
 IDENTITY_HEADER_READS = 5
+# Inter-read interval. Also the divisor used to turn the poll window into a read
+# count; a zero value (patched in tests to drop the real sleep) falls back to
+# this default for the count so the number of reads still scales with the window.
 IDENTITY_HEADER_READ_INTERVAL_S = 0.5
+# Floor for the identity poll window (#1074). Matches the old loop's ~2 s wait
+# ((IDENTITY_HEADER_READS - 1) * 0.5), so the fix never shortens how long a
+# header is waited for. The window is clamped to at least this and at most the
+# remaining provider_init_timeout.
+IDENTITY_HEADER_MIN_WINDOW_S = 2.0
 
 # =============================================================================
 # Error Detection
@@ -394,8 +412,12 @@ class KiroCliProvider(BaseProvider):
             raise KiroPhase0KASError(profile_has_v2_policy=False)
 
         # Step 1: Wait for shell prompt to appear in the tmux window
-        # This ensures the terminal is ready before we send commands
-        init_timeout = get_server_settings()["provider_init_timeout"]
+        # This ensures the terminal is ready before we send commands.
+        # Track the start so the identity poll (Step 4) can use only the budget
+        # left after the shell + readiness waits, keeping total startup within
+        # provider_init_timeout (mirrors _wait_ready_accepting_trust_dialog).
+        init_timeout = float(get_server_settings()["provider_init_timeout"])
+        init_started_at = time.monotonic()
         if not await wait_for_shell(self.terminal_id, timeout=init_timeout):
             raise TimeoutError(f"Shell initialization timed out after {init_timeout}s")
 
@@ -460,12 +482,16 @@ class KiroCliProvider(BaseProvider):
 
         # Step 4: the prompt being ready does not mean the requested agent is
         # running. Nothing is typed into the pane until the header names it.
-        await self._verify_agent_identity()
+        # Thread the leftover startup budget so a slow-but-valid header is
+        # waited out within provider_init_timeout rather than on a second,
+        # independent timeout stacked on top of the readiness wait (#1074).
+        remaining_budget = max(0.0, init_timeout - (time.monotonic() - init_started_at))
+        await self._verify_agent_identity(remaining_budget=remaining_budget)
 
         self._initialized = True
         return True
 
-    async def _verify_agent_identity(self) -> None:
+    async def _verify_agent_identity(self, remaining_budget: Optional[float] = None) -> None:
         """Raise unless every TUI header row names this provider's agent (#1074).
 
         kiro-cli answers an ``--agent`` it cannot load by starting its built-in
@@ -480,10 +506,27 @@ class KiroCliProvider(BaseProvider):
         Reads the rendered screen, not the scrollback, so the requested name in
         the echoed launch command is never what is matched (see
         ``kiro_identity.header_agents``). A screen without a header row is read
-        again a few times, because the header can trail the prompt by a frame,
-        and so is one whose header name is only partial or that shows plan mode;
-        if that persists it is refused (``header_not_found``, or for plan mode
-        ``identity_mismatch``).
+        again, because the header can trail the prompt by a frame (or longer on
+        a slow/loaded host), and so is one whose header name is only partial or
+        that shows plan mode; if that persists until the poll window is spent it
+        is refused (``header_not_found``, or for plan mode ``identity_mismatch``).
+
+        The poll is time-bounded (#1074): it keeps reading the screen at
+        ``IDENTITY_HEADER_READ_INTERVAL_S`` intervals until a readable
+        (full, non-plan-mode) header is observed or the window elapses, breaking
+        immediately on the first readable header so a fast startup gains no
+        latency. The window is the ``remaining_budget`` left from
+        ``initialize()`` (the leftover ``provider_init_timeout`` after the shell
+        and readiness waits), clamped to at least ``IDENTITY_HEADER_MIN_WINDOW_S``
+        (the old ~2 s floor, so the wait is never shortened) and at most that
+        remaining budget (so it is never longer). ``observed`` and ``plan_mode``
+        are computed on the last read and passed to ``require_header_identity``
+        unchanged, so a genuine absence reaches the same refusal it does today.
+
+        Args:
+            remaining_budget: Seconds of startup budget left for the poll,
+                threaded from ``initialize()``. ``None`` (a direct call, e.g. a
+                test) uses only the floor window, matching the old fixed wait.
 
         Raises:
             KiroAgentIdentityError: ``identity_mismatch`` or ``header_not_found``.
@@ -491,7 +534,22 @@ class KiroCliProvider(BaseProvider):
         backend = get_backend()
         observed: List[str] = []
         plan_mode = False
-        for attempt in range(IDENTITY_HEADER_READS):
+
+        # Window: never shorter than the old ~2 s floor, never longer than the
+        # remaining startup budget. A direct call (no budget) uses just the
+        # floor, reproducing the old fixed wait.
+        budget = IDENTITY_HEADER_MIN_WINDOW_S if remaining_budget is None else float(remaining_budget)
+        window = max(IDENTITY_HEADER_MIN_WINDOW_S, budget)
+
+        # Turn the window into a read count. IDENTITY_HEADER_READS is the floor,
+        # so behavior is a strict superset of the old loop. The divisor falls
+        # back to the module default when the interval is 0 (patched in tests to
+        # drop the real sleep) so the read count still scales with the window
+        # rather than collapsing to the floor.
+        count_interval = IDENTITY_HEADER_READ_INTERVAL_S if IDENTITY_HEADER_READ_INTERVAL_S > 0 else 0.5
+        max_reads = max(IDENTITY_HEADER_READS, 1 + math.ceil(window / count_interval))
+
+        for attempt in range(max_reads):
             if attempt:
                 await asyncio.sleep(IDENTITY_HEADER_READ_INTERVAL_S)
             try:

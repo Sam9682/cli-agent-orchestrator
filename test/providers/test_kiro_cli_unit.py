@@ -546,7 +546,10 @@ class TestKiroCliAgentIdentityGuard:
             await provider.initialize()
 
         assert excinfo.value.kind == "header_not_found"
-        assert len(self._identity_reads(launch)) == IDENTITY_HEADER_READS > 1
+        # #1074: the fixed 5-read loop is now a time-bounded poll. IDENTITY_HEADER_READS
+        # is the FLOOR, not the exact count, so the header-less screen is re-read at
+        # least that many times (a strict superset of the old loop) before refusing.
+        assert len(self._identity_reads(launch)) >= IDENTITY_HEADER_READS > 1
         launch.send_keys.assert_called_once()
         launch.send_special_key.assert_not_called()
         assert provider.identity_verified is False

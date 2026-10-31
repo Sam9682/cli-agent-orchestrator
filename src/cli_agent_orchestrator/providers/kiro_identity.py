@@ -40,14 +40,24 @@ logger = logging.getLogger(__name__)
 # homes. Provisional (#1074): an explicit request for either is refused too.
 KIRO_FALLBACK_AGENTS = frozenset({"kiro_default", "cao-null"})
 
-# The TUI header row: agent, model, then the context gauge and percentage. The
-# gauge glyph is not pinned (``◔`` in every capture so far, at 0-14%), and the
-# row continues with auth and cwd columns that vary by version. Matching the
-# gauge keeps a wrapped cwd column (``~/project · (main)``) from reading as a
-# header. Only rows of this shape, starting at column 0, are read: the
-# requested name also appears in the echoed launch command and in kiro-cli's
-# fallback warning, so searching the pane for it would accept the fallback.
-_HEADER_ROW = re.compile(r"^(?P<agent>[^\s·]+)\s+·\s+(?P<model>[^\s·]+)\s+·\s+\S\s*\d{1,3}%")
+# The TUI header row: agent, an optional model column, then the context gauge
+# and percentage. The gauge glyph is not pinned (``◔`` in every capture so far,
+# at 0-14%), and the row continues with auth and cwd columns that vary by
+# version. Matching the gauge keeps a wrapped cwd column (``~/project · (main)``)
+# from reading as a header. Only rows of this shape, starting at column 0, are
+# read: the requested name also appears in the echoed launch command and in
+# kiro-cli's fallback warning, so searching the pane for it would accept the
+# fallback.
+#
+# The model column is optional because Kiro CLI V3 (kiro-cli 2.37.0, "Kiro CLI
+# V3") dropped it from the header: V2 drew ``<agent> · <model> · ◔ N%`` while V3
+# draws ``<agent> · ◔ N%`` (one ``·`` separator, no model). Without this the V3
+# header matched nothing and every launch failed the post-start identity check
+# with ``header_not_found``. ``header_agents`` reads only the ``agent`` group,
+# so dropping/optionalizing the ``model`` group changes nothing downstream.
+_HEADER_ROW = re.compile(
+    r"^(?P<agent>[^\s·]+)\s+·\s+(?:(?P<model>[^\s·]+)\s+·\s+)?\S\s*\d{1,3}%"
+)
 
 # A header name kiro-cli could not draw whole: elided with an ellipsis, or cut by
 # a wrap (``header_agents`` marks a fragment whose start is on the row above with

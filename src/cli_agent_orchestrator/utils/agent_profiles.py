@@ -466,6 +466,15 @@ def read_profile_entry(name: str) -> ProfileEntry:
         source: Optional[str] = _read_agent_profile_source(name)
     except (FileNotFoundError, ValueError):
         source = None
+    if source is None and not routes_to_ephemeral_store(name):
+        # Mirror the launch path's native SHAI step (at provider-tier
+        # precedence, after the markdown stores): a native-SHAI-only name is now
+        # servable by ``load_agent_profile``, so it must be COVERED here too, or
+        # the digest's verdict would disagree with the launch path's and a
+        # servable profile would go unbound by ``plan_id`` ("servable implies
+        # covered"). The raw JSON config is the stable source text; it is never
+        # parsed as frontmatter.
+        source = _read_shai_agent_profile_source(name)
     artifacts = {
         label: _read_artifact_bytes(path) for label, path in installed_artifact_paths(name).items()
     }
@@ -575,6 +584,106 @@ def parse_agent_profile_text(resolved_text: str, profile_name: str) -> AgentProf
     return AgentProfile(**meta)
 
 
+def _shai_agent_profile(name: str) -> Optional[AgentProfile]:
+    """Map a native SHAI agent config into an ``AgentProfile``, or ``None``.
+
+    Uses the read-only ``shai_config.discover_user_agents()`` seam to find the
+    discovered agent whose filename-derived ``name`` equals ``name`` and maps
+    the SHAI config schema (``name``, ``description``, ``system_prompt``,
+    ``llm_provider``, ``tools``) onto the ``AgentProfile`` surface:
+
+    - ``name`` ← the filename-derived id the list surfaced (the discovery seam
+      already overrides the config's own ``name`` field with this), NOT the
+      config ``name`` field.
+    - ``description`` ← config ``description`` (``""`` when absent).
+    - ``system_prompt`` ← config ``system_prompt`` (``None`` when absent).
+    - ``provider`` / ``model`` ← ``llm_provider.provider`` / ``llm_provider.model``
+      when present; left unset otherwise.
+    - ``tools`` ← the SHAI ``tools.builtin`` enable list when declared; absent
+      (``None``) when the config declares no ``tools`` block.
+
+    SHAI configs are JSON (``{name}.config.json`` / legacy ``{name}.config``),
+    not markdown frontmatter, so this path produces a ready ``AgentProfile``
+    rather than raw text for ``parse_agent_profile_text``.
+
+    Returns ``None`` when no discovered agent matches ``name``. Reuses
+    ``discover_user_agents()``'s read-only, skip-on-error semantics (``[]`` for
+    an absent/unreadable dir, malformed configs skipped) and wraps everything
+    defensively so an unexpected error contributes nothing and the caller's
+    lookup falls through to the built-in store and the existing
+    ``FileNotFoundError`` rather than aborting with a different error.
+
+    Validates: Requirements 2.1, 2.3, 3.6
+    """
+    try:
+        from cli_agent_orchestrator.utils.shai_config import discover_user_agents
+
+        metadata = next(
+            (m for m in discover_user_agents() if m.get("name") == name), None
+        )
+        if metadata is None:
+            return None
+
+        llm_provider = metadata.get("llm_provider") or {}
+        if not isinstance(llm_provider, dict):
+            llm_provider = {}
+
+        tools_block = metadata.get("tools")
+        tools = None
+        if isinstance(tools_block, dict):
+            builtin = tools_block.get("builtin")
+            if isinstance(builtin, list):
+                tools = [str(t) for t in builtin]
+
+        return AgentProfile(
+            name=name,  # filename-derived id, not the config "name" field
+            description=metadata.get("description") or "",
+            system_prompt=metadata.get("system_prompt"),
+            provider=llm_provider.get("provider"),
+            model=llm_provider.get("model"),
+            tools=tools,
+        )
+    except Exception as e:
+        logger.debug(f"Could not map native SHAI agent '{name}': {e}")
+        return None
+
+
+def _read_shai_agent_profile_source(name: str) -> Optional[str]:
+    """Return the raw text of the native SHAI config backing ``name``, or ``None``.
+
+    Finds the discovered native SHAI agent whose filename-derived ``name`` equals
+    ``name`` and reads its source file (``{name}.config.json`` / legacy
+    ``{name}.config``) read-only. This is the raw-source counterpart to
+    :func:`_shai_agent_profile`: the launch path (:func:`load_agent_profile`)
+    maps the config to an ``AgentProfile``, while the digest / entry path
+    (:func:`read_profile_entry`) needs a stable raw-source string so that a
+    native-SHAI-only profile the launch path can now serve is likewise COVERED
+    by ``plan_id`` (the "servable implies covered" invariant). The raw JSON is
+    used verbatim as the digest's source text; it is never parsed as markdown
+    frontmatter.
+
+    Returns ``None`` when no discovered agent matches ``name`` or the source file
+    cannot be read. Reuses ``discover_user_agents()``'s read-only, skip-on-error
+    semantics and is wrapped defensively so an unexpected error contributes
+    nothing and the caller falls through unchanged.
+    """
+    try:
+        from cli_agent_orchestrator.utils.shai_config import discover_user_agents
+
+        metadata = next(
+            (m for m in discover_user_agents() if m.get("name") == name), None
+        )
+        if metadata is None:
+            return None
+        source_path = metadata.get("path")
+        if not source_path:
+            return None
+        return Path(source_path).read_text(encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Could not read native SHAI agent source '{name}': {e}")
+        return None
+
+
 def _read_agent_profile_source(agent_name: str) -> str:
     """Locate an agent profile across configured stores and return the raw text.
 
@@ -610,9 +719,15 @@ def installed_profile_exists(agent_name: str) -> bool:
     return True
 
 
-def _read_installed_agent_profile_source(agent_name: str) -> str:
-    """Raw installed lookup for namespace collision checks and the guarded reader."""
-    _validate_agent_name(agent_name)
+def _read_pre_builtin_agent_profile_source(agent_name: str) -> Optional[str]:
+    """Raw lookup across the pre-built-in stores (local → provider → extra).
+
+    Returns the raw markdown text of the first matching store, or ``None`` when
+    the name is absent from all of them. This is the set of stores scanned
+    BEFORE the native SHAI step and the built-in store, so splitting it out lets
+    callers interleave the native SHAI lookup at provider-tier precedence
+    (after these stores, before built-in) without disturbing shadowing.
+    """
     from cli_agent_orchestrator.services.settings_service import (
         get_disabled_agent_dirs,
         get_extra_agent_dirs,
@@ -626,9 +741,9 @@ def _read_installed_agent_profile_source(agent_name: str) -> str:
 
     # Every filesystem read below goes through _safe_join so the path is
     # normalised and verified to stay inside its configured root. This is
-    # belt-and-braces on top of _validate_agent_name above — the name check
-    # rejects obvious traversal inputs, and _safe_join additionally blocks
-    # anything that sneaks past (e.g. symlinks resolving outside the root).
+    # belt-and-braces on top of _validate_agent_name — the name check rejects
+    # obvious traversal inputs, and _safe_join additionally blocks anything that
+    # sneaks past (e.g. symlinks resolving outside the root).
     if normalized_path(LOCAL_AGENT_STORE_DIR) not in disabled:
         local_profile = _safe_join(LOCAL_AGENT_STORE_DIR, f"{agent_name}.md")
         if local_profile is not None and local_profile.exists():
@@ -659,6 +774,15 @@ def _read_installed_agent_profile_source(agent_name: str) -> str:
         if found is not None:
             return found
 
+    return None
+
+
+def _read_builtin_agent_profile_source(agent_name: str) -> Optional[str]:
+    """Raw lookup in the built-in package store; ``None`` when absent.
+
+    Scanned LAST (after local/provider/extra and the native SHAI step) so any
+    on-disk or native SHAI copy wins over a same-named built-in.
+    """
     # Built-in store is inside the installed package — the traversable API
     # still concatenates agent_name as a single segment, so validate the
     # result's name before reading.
@@ -666,15 +790,80 @@ def _read_installed_agent_profile_source(agent_name: str) -> str:
     built_in = agent_store / f"{agent_name}.md"
     if built_in.name == f"{agent_name}.md" and built_in.is_file():
         return built_in.read_text(encoding="utf-8")
+    return None
+
+
+def _read_installed_agent_profile_source(agent_name: str) -> str:
+    """Raw installed lookup for namespace collision checks and the guarded reader.
+
+    Returns the raw markdown text of the first matching NON-SHAI store, in the
+    order local → provider dirs → extra dirs → built-in. The native SHAI step is
+    deliberately NOT consulted here: SHAI configs are JSON, not markdown
+    frontmatter, so they cannot flow through this raw-text contract. The SHAI
+    step is interleaved in ``load_agent_profile`` (at provider-tier precedence,
+    before built-in) where it can return a ready ``AgentProfile``. Callers that
+    only need a raw-text / existence verdict for the markdown stores
+    (``installed_profile_exists``, the install service) keep this unchanged
+    contract.
+    """
+    _validate_agent_name(agent_name)
+
+    found = _read_pre_builtin_agent_profile_source(agent_name)
+    if found is not None:
+        return found
+
+    built_in = _read_builtin_agent_profile_source(agent_name)
+    if built_in is not None:
+        return built_in
 
     raise FileNotFoundError(f"Agent profile not found: {agent_name}")
 
 
 def load_agent_profile(agent_name: str) -> AgentProfile:
-    """Load an agent profile from the configured stores."""
+    """Load an agent profile from the configured stores.
+
+    Resolution order matches the enumeration scan order so by-id lookup is
+    symmetric with ``list_agent_profiles()``:
+
+    1. local store → provider dirs → extra dirs (raw markdown, parsed via
+       ``parse_agent_profile_text``);
+    2. native SHAI directory (``SHAI_USER_AGENTS_DIR``) — JSON configs mapped
+       straight into an ``AgentProfile`` by ``_shai_agent_profile``, inserted at
+       provider-tier precedence so an earlier-scanned same-named store still
+       wins (first-found-wins) and a native SHAI agent still wins over a
+       same-named built-in;
+    3. built-in package store (raw markdown).
+
+    The SHAI branch short-circuits with a ready ``AgentProfile`` because SHAI
+    source is JSON and cannot flow through the markdown frontmatter parser; every
+    other store keeps the raw-text + ``parse_agent_profile_text`` path untouched.
+    Write paths and reserved-name routing are unaffected — this is read-only.
+    """
     try:
-        raw_text = _read_agent_profile_source(agent_name)
-        return parse_agent_profile_text(resolve_env_vars(raw_text), agent_name)
+        _validate_agent_name(agent_name)
+        if routes_to_ephemeral_store(agent_name):
+            raise FileNotFoundError(f"Reserved ephemeral profile name: {agent_name}")
+
+        # 1. Pre-built-in markdown stores (local → provider → extra).
+        raw_text = _read_pre_builtin_agent_profile_source(agent_name)
+        if raw_text is not None:
+            return parse_agent_profile_text(resolve_env_vars(raw_text), agent_name)
+
+        # 2. Native SHAI directory, at provider-tier precedence (before
+        #    built-in). JSON config is mapped to a ready AgentProfile rather than
+        #    raw text. _shai_agent_profile is defensively wrapped and returns
+        #    None for an absent/unreadable/malformed config, so the lookup falls
+        #    through to the built-in store below.
+        shai_profile = _shai_agent_profile(agent_name)
+        if shai_profile is not None:
+            return shai_profile
+
+        # 3. Built-in package store (scanned last).
+        built_in = _read_builtin_agent_profile_source(agent_name)
+        if built_in is not None:
+            return parse_agent_profile_text(resolve_env_vars(built_in), agent_name)
+
+        raise FileNotFoundError(f"Agent profile not found: {agent_name}")
     except (FileNotFoundError, ValueError):
         raise
     except Exception as e:

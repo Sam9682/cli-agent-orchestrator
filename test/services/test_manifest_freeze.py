@@ -446,6 +446,14 @@ def _store(tmp_path, monkeypatch, **profiles) -> None:
     monkeypatch.setattr(settings_service, "usable_agent_dirs", lambda: {})
     monkeypatch.setattr(settings_service, "get_extra_agent_dirs", lambda: [])
     monkeypatch.setattr(settings_service, "get_disabled_agent_dirs", lambda: [])
+    # The native SHAI user dir is a servable store too (shai-profile-lookup-by-id): a
+    # name present only there now resolves via load_agent_profile and so is COVERED by
+    # the digest. Pin it to an empty dir for the same reason provider/extra dirs are
+    # pinned — otherwise a real ~/.config/shai/agents config on the machine running the
+    # tests would leak into this "empty profile store" digest and move the golden hash.
+    from cli_agent_orchestrator.utils import shai_config
+
+    monkeypatch.setattr(shai_config, "SHAI_USER_AGENTS_DIR", tmp_path / "shai-user-empty")
     # The installed-artifact sinks default to real paths under the user's home (PR #1000, P2-2).
     from cli_agent_orchestrator.services import install_service
 
